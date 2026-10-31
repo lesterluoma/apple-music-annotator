@@ -1,0 +1,411 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Apple Music Annotator</title>
+<style>
+  :root {
+    --bg: #f7f7f8; --panel: #ffffff; --text: #1d1d1f; --muted: #6e6e73;
+    --border: #e3e3e6; --hover: #f0f0f3; --accent: #fa2d48; --accent-text: #ffffff;
+    --selected: #ffe8ec; --ok: #1f8a4c; --warn: #b4580a; --mono: ui-monospace, Menlo, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #161618; --panel: #1f1f22; --text: #f2f2f4; --muted: #9a9aa0;
+      --border: #333338; --hover: #2a2a2e; --selected: #4a1c25; --ok: #4cc77f; --warn: #f0a050;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 13px/1.4 -apple-system, BlinkMacSystemFont, sans-serif; background: var(--bg); color: var(--text); }
+  header { display: flex; gap: 10px; align-items: center; padding: 10px 14px; border-bottom: 1px solid var(--border); background: var(--panel); position: sticky; top: 0; z-index: 2; }
+  header h1 { font-size: 15px; margin: 0 8px 0 0; }
+  input, select, button { font: inherit; color: inherit; }
+  input[type=text], input[type=number], input[type=search], select {
+    background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 5px 8px;
+  }
+  #search { width: 320px; }
+  button { background: var(--hover); border: 1px solid var(--border); border-radius: 6px; padding: 5px 10px; cursor: pointer; }
+  button.primary { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
+  button:disabled { opacity: .5; cursor: default; }
+  .muted { color: var(--muted); }
+  .spacer { flex: 1; }
+  main { display: grid; grid-template-columns: 240px 1fr 320px; height: calc(100vh - 51px); }
+  aside, section { overflow-y: auto; }
+  #artists { border-right: 1px solid var(--border); background: var(--panel); }
+  #artists div { padding: 4px 12px; cursor: pointer; display: flex; justify-content: space-between; gap: 8px; }
+  #artists div span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #artists div:hover { background: var(--hover); }
+  #artists div.active { background: var(--selected); font-weight: 600; }
+  #tracks { padding: 0 0 40px; }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; padding: 4px 8px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+  td.name { white-space: normal; }
+  tr.album td { background: var(--bg); font-weight: 600; padding-top: 14px; border-bottom: 1px solid var(--border); }
+  tr.track { cursor: pointer; }
+  tr.track:hover td { background: var(--hover); }
+  tr.track.sel td { background: var(--selected); }
+  tr.track.gone td { opacity: .5; }
+  th { position: sticky; top: 0; background: var(--panel); z-index: 1; font-weight: 600; color: var(--muted); }
+  .num { text-align: right; font-variant-numeric: tabular-nums; }
+  .stars { color: var(--accent); letter-spacing: 1px; }
+  .empty { padding: 40px; text-align: center; color: var(--muted); }
+  #editor { border-left: 1px solid var(--border); background: var(--panel); padding: 14px; }
+  #editor h2 { font-size: 14px; margin: 0 0 10px; }
+  .field { display: grid; grid-template-columns: 18px 70px 1fr; align-items: center; gap: 6px; margin-bottom: 8px; }
+  .field input:not([type=checkbox]), .field select { width: 100%; }
+  .field.off input:not([type=checkbox]), .field.off select { opacity: .4; }
+  .hint { font-size: 12px; color: var(--muted); margin: 4px 0 12px; }
+  .row { display: flex; gap: 8px; margin: 10px 0; }
+  #history { margin-top: 24px; border-top: 1px solid var(--border); padding-top: 12px; }
+  .batch { padding: 6px 0; border-bottom: 1px solid var(--border); display: flex; gap: 8px; align-items: center; }
+  .batch div { flex: 1; min-width: 0; }
+  .batch .label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  dialog { border: 1px solid var(--border); border-radius: 10px; background: var(--panel); color: var(--text); max-width: 900px; width: 90vw; max-height: 80vh; padding: 0; }
+  dialog::backdrop { background: rgba(0,0,0,.4); }
+  dialog .body { padding: 16px; overflow-y: auto; max-height: calc(80vh - 60px); }
+  dialog .foot { padding: 10px 16px; border-top: 1px solid var(--border); display: flex; gap: 8px; justify-content: flex-end; }
+  .old { color: var(--muted); text-decoration: line-through; }
+  .new { color: var(--ok); font-weight: 600; }
+  #toast { position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%); background: var(--text); color: var(--bg); padding: 8px 14px; border-radius: 8px; display: none; z-index: 10; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Apple Music Annotator</h1>
+  <input id="search" type="search" placeholder="Search title, artist, album, genre…">
+  <select id="filter">
+    <option value="">All tracks</option>
+    <option value="genre">Missing genre</option>
+    <option value="bpm">Missing BPM</option>
+    <option value="key">Missing key</option>
+    <option value="rating">Unrated</option>
+    <option value="unavailable">No longer available</option>
+  </select>
+  <span class="spacer"></span>
+  <span id="status" class="muted"></span>
+  <button id="refresh" title="Re-read the library from the Music app">Reload library</button>
+</header>
+<main>
+  <aside id="artists"></aside>
+  <section id="tracks"></section>
+  <aside id="editor">
+    <h2 id="selCount">No tracks selected</h2>
+    <div class="row">
+      <button id="selectView">Select all shown</button>
+      <button id="clearSel">Clear</button>
+    </div>
+    <p class="hint">Tick a field to change it on every selected track. A ticked field left blank clears it.</p>
+    <div class="field off" data-field="genre"><input type="checkbox"><label>Genre</label><input type="text" list="genres"></div>
+    <div class="field off" data-field="bpm"><input type="checkbox"><label>BPM</label><input type="number" min="0" max="999"></div>
+    <div class="field off" data-field="key"><input type="checkbox"><label>Key</label><select id="keySelect"><option value="">(none)</option></select></div>
+    <div class="field off" data-field="rating"><input type="checkbox"><label>Rating</label>
+      <select><option value="0">Unrated</option><option value="1">★</option><option value="2">★★</option><option value="3">★★★</option><option value="4">★★★★</option><option value="5">★★★★★</option></select></div>
+    <div class="field off" data-field="year"><input type="checkbox"><label>Year</label><input type="number" min="0" max="9999"></div>
+    <div class="field off" data-field="grouping"><input type="checkbox"><label>Grouping</label><input type="text"></div>
+    <datalist id="genres"></datalist>
+    <div class="row"><button id="preview" class="primary" disabled>Preview changes…</button></div>
+    <div id="history"><h2>History</h2><div id="batches" class="muted">No edits yet.</div></div>
+  </aside>
+</main>
+
+<dialog id="dlg">
+  <div class="body" id="dlgBody"></div>
+  <div class="foot"><button id="dlgCancel">Cancel</button><button id="dlgApply" class="primary">Apply</button></div>
+</dialog>
+<div id="toast"></div>
+
+<script>
+const FIELDS = ["genre", "bpm", "key", "rating", "year", "grouping"];
+const LABELS = { genre: "Genre", bpm: "BPM", key: "Key", rating: "Rating", year: "Year", grouping: "Grouping" };
+const MAX_ROWS = 1500;
+
+let tracks = [];
+let byId = new Map();
+let selected = new Set();
+let currentArtist = null;
+let shownIds = [];
+
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const stars = n => n ? "★".repeat(n) : "";
+const artistOf = t => t.albumArtist || t.artist || "(Unknown artist)";
+const fmtVal = (f, v) => f === "rating" ? (v ? stars(v) : "unrated") : (v === "" || v === 0 ? "—" : v);
+
+async function api(path, body) {
+  const res = await fetch(path, body === undefined ? {} : { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || res.statusText);
+  return data;
+}
+
+function toast(msg, ms = 3500) {
+  const el = $("toast");
+  el.textContent = msg;
+  el.style.display = "block";
+  clearTimeout(toast.t);
+  toast.t = setTimeout(() => el.style.display = "none", ms);
+}
+
+async function loadLibrary() {
+  $("status").textContent = "Loading…";
+  const data = await api("/api/library");
+  tracks = data.tracks;
+  byId = new Map(tracks.map(t => [t.id, t]));
+  $("keySelect").innerHTML = '<option value="">(none)</option>' + data.keys.map(k => `<option>${esc(k)}</option>`).join("");
+  refreshGenres();
+  $("status").textContent = `${tracks.length.toLocaleString()} tracks · loaded ${new Date(data.loadedAt * 1000).toLocaleString()}`;
+  render();
+}
+
+function refreshGenres() {
+  const genres = [...new Set(tracks.map(t => t.genre).filter(Boolean))].sort((a, b) => a.localeCompare(b));
+  $("genres").innerHTML = genres.map(g => `<option value="${esc(g)}">`).join("");
+}
+
+function matches(t) {
+  const f = $("filter").value;
+  if (f === "genre" && t.genre) return false;
+  if (f === "bpm" && t.bpm) return false;
+  if (f === "key" && t.key) return false;
+  if (f === "rating" && t.rating) return false;
+  if (f === "unavailable" && !t.unavailable) return false;
+  const q = $("search").value.trim().toLowerCase();
+  if (!q) return true;
+  return [t.name, t.artist, t.albumArtist, t.album, t.genre].some(s => s && s.toLowerCase().includes(q));
+}
+
+function render() {
+  const visible = tracks.filter(matches);
+  const counts = new Map();
+  visible.forEach(t => counts.set(artistOf(t), (counts.get(artistOf(t)) || 0) + 1));
+  const artists = [...counts.keys()].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }));
+  if (currentArtist && !counts.has(currentArtist)) currentArtist = null;
+
+  $("artists").innerHTML =
+    `<div data-artist="" class="${currentArtist ? "" : "active"}"><span>All matching</span><span class="muted">${visible.length.toLocaleString()}</span></div>` +
+    artists.map(a => `<div data-artist="${esc(a)}" class="${a === currentArtist ? "active" : ""}"><span>${esc(a)}</span><span class="muted">${counts.get(a)}</span></div>`).join("");
+
+  const filtering = $("search").value.trim() || $("filter").value;
+  let rows = currentArtist ? visible.filter(t => artistOf(t) === currentArtist) : visible;
+  if (!currentArtist && !filtering) {
+    shownIds = [];
+    $("tracks").innerHTML = `<div class="empty">Pick an artist on the left, or search / filter to find tracks.</div>`;
+    updateEditor();
+    return;
+  }
+  const truncated = rows.length > MAX_ROWS;
+  rows = rows.slice(0, MAX_ROWS);
+  shownIds = rows.map(t => t.id);
+
+  // Group by artist + album; albums ordered by year then name, tracks by disc/track number.
+  const albums = new Map();
+  rows.forEach(t => {
+    const k = artistOf(t) + "\u0000" + t.album;
+    if (!albums.has(k)) albums.set(k, []);
+    albums.get(k).push(t);
+  });
+  const albumList = [...albums.values()].sort((a, b) =>
+    artistOf(a[0]).localeCompare(artistOf(b[0])) || (a[0].year || 9999) - (b[0].year || 9999) || a[0].album.localeCompare(b[0].album));
+
+  let html = `<table><thead><tr><th></th><th>#</th><th>Title</th><th>Artist</th><th>Genre</th><th class="num">BPM</th><th>Key</th><th>Rating</th><th class="num">Year</th><th>Grouping</th></tr></thead><tbody>`;
+  albumList.forEach((group, gi) => {
+    group.sort((a, b) => a.discNumber - b.discNumber || a.trackNumber - b.trackNumber);
+    const allSel = group.every(t => selected.has(t.id));
+    const label = currentArtist ? group[0].album : `${artistOf(group[0])} — ${group[0].album}`;
+    html += `<tr class="album"><td><input type="checkbox" data-album="${gi}" ${allSel ? "checked" : ""}></td><td colspan="9">${esc(label || "(No album)")} <span class="muted">${group[0].year || ""} · ${group.length} tracks</span></td></tr>`;
+    group.forEach(t => {
+      html += `<tr class="track ${selected.has(t.id) ? "sel" : ""} ${t.unavailable ? "gone" : ""}" data-id="${esc(t.id)}" title="${esc(t.comment)}">
+        <td><input type="checkbox" ${selected.has(t.id) ? "checked" : ""}></td>
+        <td class="num muted">${t.trackNumber || ""}</td>
+        <td class="name">${esc(t.name)}</td>
+        <td class="muted">${esc(t.artist)}</td>
+        <td>${esc(t.genre)}</td>
+        <td class="num">${t.bpm || ""}</td>
+        <td>${esc(t.key)}</td>
+        <td class="stars">${stars(t.rating)}</td>
+        <td class="num">${t.year || ""}</td>
+        <td>${esc(t.grouping)}</td></tr>`;
+    });
+  });
+  html += `</tbody></table>`;
+  if (truncated) html += `<div class="empty">Showing the first ${MAX_ROWS.toLocaleString()} tracks. Narrow your search to see more.</div>`;
+  $("tracks").innerHTML = html;
+  $("tracks").albumGroups = albumList;
+  updateEditor();
+}
+
+function updateEditor() {
+  const n = selected.size;
+  $("selCount").textContent = n ? `${n.toLocaleString()} track${n === 1 ? "" : "s"} selected` : "No tracks selected";
+  const anyField = [...document.querySelectorAll(".field")].some(f => f.querySelector("input[type=checkbox]").checked);
+  $("preview").disabled = !n || !anyField;
+}
+
+function toggle(id, on) {
+  if (on ?? !selected.has(id)) selected.add(id); else selected.delete(id);
+}
+
+$("tracks").addEventListener("click", e => {
+  const albumBox = e.target.closest("input[data-album]");
+  if (albumBox) {
+    $("tracks").albumGroups[+albumBox.dataset.album].forEach(t => toggle(t.id, albumBox.checked));
+    return render();
+  }
+  const row = e.target.closest("tr.track");
+  if (!row) return;
+  // Clicking a row with a single track pre-fills the editor with its values.
+  toggle(row.dataset.id);
+  if (selected.size === 1) prefill(byId.get([...selected][0]));
+  render();
+});
+
+$("artists").addEventListener("click", e => {
+  const el = e.target.closest("[data-artist]");
+  if (!el) return;
+  currentArtist = el.dataset.artist || null;
+  render();
+  $("tracks").scrollTop = 0;
+});
+
+let searchTimer;
+$("search").addEventListener("input", () => { clearTimeout(searchTimer); searchTimer = setTimeout(render, 150); });
+$("filter").addEventListener("change", render);
+$("selectView").addEventListener("click", () => { shownIds.forEach(id => selected.add(id)); render(); });
+$("clearSel").addEventListener("click", () => { selected.clear(); render(); });
+
+function fieldEl(name) { return document.querySelector(`.field[data-field="${name}"]`); }
+function fieldInput(name) { return fieldEl(name).querySelector("input:not([type=checkbox]), select"); }
+
+function prefill(t) {
+  FIELDS.forEach(f => {
+    if (fieldEl(f).querySelector("input[type=checkbox]").checked) return;
+    fieldInput(f).value = t[f] === 0 && f !== "rating" ? "" : t[f];
+  });
+}
+
+document.querySelectorAll(".field").forEach(f => {
+  const box = f.querySelector("input[type=checkbox]");
+  const input = f.querySelector("input:not([type=checkbox]), select");
+  const sync = () => { f.classList.toggle("off", !box.checked); updateEditor(); };
+  box.addEventListener("change", sync);
+  // Typing in a field ticks it automatically.
+  input.addEventListener("input", () => { box.checked = true; sync(); });
+  input.addEventListener("change", () => { box.checked = true; sync(); });
+});
+
+function collectFields() {
+  const out = {};
+  FIELDS.forEach(f => {
+    if (!fieldEl(f).querySelector("input[type=checkbox]").checked) return;
+    const v = fieldInput(f).value.trim();
+    out[f] = ["bpm", "year", "rating"].includes(f) ? (v === "" ? 0 : parseInt(v, 10)) : v;
+  });
+  return out;
+}
+
+let pending = null;
+
+$("preview").addEventListener("click", () => {
+  const fields = collectFields();
+  for (const f of ["bpm", "year"]) {
+    if (f in fields && (isNaN(fields[f]) || fields[f] < 0)) return toast(`${LABELS[f]} must be a positive number`);
+  }
+  const ids = [...selected];
+  const diffs = [];
+  ids.forEach(id => {
+    const t = byId.get(id);
+    const changes = Object.entries(fields).filter(([f, v]) => (t[f] ?? "") !== v);
+    if (changes.length) diffs.push({ t, changes });
+  });
+  if (!diffs.length) return toast("Selected tracks already have those values.");
+
+  const summary = Object.entries(fields).map(([f, v]) => `${LABELS[f]} → ${fmtVal(f, v)}`).join(", ");
+  pending = { ids: diffs.map(d => d.t.id), fields, label: `${summary} (${diffs.length} tracks)` };
+  let html = `<h2 style="margin-top:0">Apply to ${diffs.length} track${diffs.length === 1 ? "" : "s"}?</h2>
+    <p class="muted">${esc(summary)}${diffs.length < ids.length ? ` · ${ids.length - diffs.length} selected tracks already match` : ""}</p>`;
+  if (fields.key !== undefined) html += `<p class="hint">Key is stored at the start of each track's Comments; the rest of the comment is kept.</p>`;
+  html += `<table><thead><tr><th>Track</th><th>Artist</th><th>Changes</th></tr></thead><tbody>`;
+  diffs.slice(0, 500).forEach(({ t, changes }) => {
+    html += `<tr><td>${esc(t.name)}</td><td class="muted">${esc(t.artist)}</td><td>${changes.map(([f, v]) =>
+      `${LABELS[f]}: <span class="old">${esc(fmtVal(f, t[f]))}</span> <span class="new">${esc(fmtVal(f, v))}</span>`).join(" · ")}</td></tr>`;
+  });
+  html += `</tbody></table>`;
+  if (diffs.length > 500) html += `<p class="muted">…and ${diffs.length - 500} more.</p>`;
+  $("dlgBody").innerHTML = html;
+  $("dlgApply").disabled = false;
+  $("dlg").showModal();
+});
+
+$("dlgCancel").addEventListener("click", () => $("dlg").close());
+
+$("dlgApply").addEventListener("click", async () => {
+  $("dlgApply").disabled = true;
+  $("dlgApply").textContent = "Applying…";
+  try {
+    const res = await api("/api/apply", pending);
+    report(res, "Updated");
+    $("dlg").close();
+    await afterWrite();
+  } catch (err) {
+    toast("Error: " + err.message, 6000);
+  } finally {
+    $("dlgApply").textContent = "Apply";
+  }
+});
+
+function report(res, verb) {
+  let msg = `${verb} ${res.tracksChanged} track${res.tracksChanged === 1 ? "" : "s"}`;
+  if (res.failed.length) msg += ` · ${res.failed.length} failed (${res.failed[0].error})`;
+  toast(msg, res.failed.length ? 8000 : 3500);
+}
+
+async function afterWrite() {
+  const scroll = $("tracks").scrollTop;
+  await loadLibrary();
+  $("tracks").scrollTop = scroll;
+  await loadHistory();
+}
+
+async function loadHistory() {
+  const batches = await api("/api/history");
+  if (!batches.length) { $("batches").innerHTML = "No edits yet."; return; }
+  $("batches").innerHTML = batches.map(b => `
+    <div class="batch">
+      <div><div class="label" title="${esc(b.label)}">${esc(b.label)}</div>
+      <div class="muted">${new Date(b.time * 1000).toLocaleString()} · ${b.changes.length} change${b.changes.length === 1 ? "" : "s"}${b.undone ? " · undone" : ""}</div></div>
+      ${b.undoes || b.undone || !b.changes.length ? "" : `<button data-undo="${b.batchId}">Undo</button>`}
+    </div>`).join("");
+}
+
+$("batches").addEventListener("click", async e => {
+  const btn = e.target.closest("[data-undo]");
+  if (!btn || !confirm("Restore the previous values for this edit?")) return;
+  btn.disabled = true;
+  try {
+    report(await api("/api/undo", { batchId: btn.dataset.undo }), "Restored");
+    await afterWrite();
+  } catch (err) {
+    toast("Error: " + err.message, 6000);
+    btn.disabled = false;
+  }
+});
+
+$("refresh").addEventListener("click", async () => {
+  $("refresh").disabled = true;
+  $("status").textContent = "Reading library from Music…";
+  try {
+    await api("/api/refresh", {});
+    await loadLibrary();
+    toast("Library reloaded from Music");
+  } catch (err) {
+    toast("Error: " + err.message, 6000);
+  } finally {
+    $("refresh").disabled = false;
+  }
+});
+
+loadLibrary().then(loadHistory).catch(err => { $("status").textContent = "Error: " + err.message; });
+</script>
+</body>
+</html>
